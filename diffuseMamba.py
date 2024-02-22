@@ -15,6 +15,8 @@ import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 
+from mamba_ssm import Mamba
+
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -99,36 +101,35 @@ class LabelEmbedder(nn.Module):
 
 
 #################################################################################
-#                                 Core DiT Model                                #
+#                                 Core DiM Model                                #
 #################################################################################
 
-class DiTBlock(nn.Module):
+class DiMBlock(nn.Module):
     """
-    A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
+    A DiM block with adaptive layer norm zero (adaLN-Zero) conDiMioning.
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_size:int, d_conv:int, layer_idx:int, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, **block_kwargs)
+        self.mamba1 = Mamba(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx, **block_kwargs)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+        self.mamba2 = Mamba(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx + 1, **block_kwargs)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
     def forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        shift_mamba1, scale_mamba1, gate_mamba1, shift_mamba2, scale_mamba2, gate_mamba2 = self.adaLN_modulation(c).chunk(6, dim=1)
+        x = x + gate_mamba1.unsqueeze(1) * self.mamba1(modulate(self.norm1(x), shift_mamba1, scale_mamba1))
+        x = x + gate_mamba2.unsqueeze(1) * self.mamba2(modulate(self.norm2(x), shift_mamba2, scale_mamba2))
         return x
+
 
 
 class FinalLayer(nn.Module):
     """
-    The final layer of DiT.
+    The final layer of DiM.
     """
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
@@ -146,7 +147,7 @@ class FinalLayer(nn.Module):
         return x
 
 
-class DiT(nn.Module):
+class DiM(nn.Module):
     """
     Diffusion model with a Transformer backbone.
     """
@@ -157,8 +158,7 @@ class DiT(nn.Module):
         in_channels=4,
         hidden_size=1152,
         depth=28,
-        num_heads=16,
-        mlp_ratio=4.0,
+        d_conv=4, # original Mamba set 4
         class_dropout_prob=0.1,
         num_classes=1000,
         learn_sigma=True,
@@ -168,7 +168,6 @@ class DiT(nn.Module):
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
-        self.num_heads = num_heads
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -178,7 +177,7 @@ class DiT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
+            DiMBlock(hidden_size, d_conv, layer_idx) for layer_idx in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
@@ -208,7 +207,7 @@ class DiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
-        # Zero-out adaLN modulation layers in DiT blocks:
+        # Zero-out adaLN modulation layers in DiM blocks:
         for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
@@ -236,7 +235,7 @@ class DiT(nn.Module):
 
     def forward(self, x, t, y):
         """
-        Forward pass of DiT.
+        Forward pass of DiM.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
@@ -253,7 +252,7 @@ class DiT(nn.Module):
 
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """
-        Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
+        Forward pass of DiM, but also batches the unconDiMional forward pass for classifier-free guidance.
         """
         # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
         half = x[: len(x) // 2]
@@ -326,51 +325,51 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 
 
 #################################################################################
-#                                   DiT Configs                                  #
+#                                   DiM Configs                                  #
 #################################################################################
 
-def DiT_XL_2(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+def DiM_XL_2(**kwargs):
+    return DiM(depth=28, hidden_size=1152, patch_size=2, **kwargs)
 
-def DiT_XL_4(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=4, num_heads=16, **kwargs)
+def DiM_XL_4(**kwargs):
+    return DiM(depth=28, hidden_size=1152, patch_size=4, **kwargs)
 
-def DiT_XL_8(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=8, num_heads=16, **kwargs)
+def DiM_XL_8(**kwargs):
+    return DiM(depth=28, hidden_size=1152, patch_size=8, **kwargs)
 
-def DiT_L_2(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
+def DiM_L_2(**kwargs):
+    return DiM(depth=24, hidden_size=1024, patch_size=2, **kwargs)
 
-def DiT_L_4(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=4, num_heads=16, **kwargs)
+def DiM_L_4(**kwargs):
+    return DiM(depth=24, hidden_size=1024, patch_size=4, **kwargs)
 
-def DiT_L_8(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=8, num_heads=16, **kwargs)
+def DiM_L_8(**kwargs):
+    return DiM(depth=24, hidden_size=1024, patch_size=8, **kwargs)
 
-def DiT_B_2(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
+def DiM_B_2(**kwargs):
+    return DiM(depth=12, hidden_size=768, patch_size=2, **kwargs)
 
-def DiT_B_4(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
+def DiM_B_4(**kwargs):
+    return DiM(depth=12, hidden_size=768, patch_size=4, **kwargs)
 
-def DiT_B_8(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=8, num_heads=12, **kwargs)
+def DiM_B_8(**kwargs):
+    return DiM(depth=12, hidden_size=768, patch_size=8, **kwargs)
 
-def DiT_S_2(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
+def DiM_S_2(**kwargs):
+    return DiM(depth=12, hidden_size=384, patch_size=2, **kwargs)
 
-def DiT_S_4(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=4, num_heads=6, **kwargs)
+def DiM_S_4(**kwargs):
+    return DiM(depth=12, hidden_size=384, patch_size=4, **kwargs)
 
-def DiT_S_8(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=8, num_heads=6, **kwargs)
+def DiM_S_8(**kwargs):
+    return DiM(depth=12, hidden_size=384, patch_size=8, **kwargs)
 
 
-DiT_models = {
-    'DiT-XL/2': DiT_XL_2,  'DiT-XL/4': DiT_XL_4,  'DiT-XL/8': DiT_XL_8,
-    'DiT-L/2':  DiT_L_2,   'DiT-L/4':  DiT_L_4,   'DiT-L/8':  DiT_L_8,
-    'DiT-B/2':  DiT_B_2,   'DiT-B/4':  DiT_B_4,   'DiT-B/8':  DiT_B_8,
-    'DiT-S/2':  DiT_S_2,   'DiT-S/4':  DiT_S_4,   'DiT-S/8':  DiT_S_8,
+DiM_models = {
+    'DiM-XL/2': DiM_XL_2,  'DiM-XL/4': DiM_XL_4,  'DiM-XL/8': DiM_XL_8,
+    'DiM-L/2':  DiM_L_2,   'DiM-L/4':  DiM_L_4,   'DiM-L/8':  DiM_L_8,
+    'DiM-B/2':  DiM_B_2,   'DiM-B/4':  DiM_B_4,   'DiM-B/8':  DiM_B_8,
+    'DiM-S/2':  DiM_S_2,   'DiM-S/4':  DiM_S_4,   'DiM-S/8':  DiM_S_8,
 }
 
 
@@ -378,7 +377,7 @@ if __name__ == "__main__":
     latent_size = 32
     num_classes = 1000
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DiT_S_2(input_size=latent_size, num_classes=num_classes)
+    model = DiM_B_2(input_size=latent_size, num_classes=num_classes)
     model = model.to(device)
     trainable_parameters(model)
     

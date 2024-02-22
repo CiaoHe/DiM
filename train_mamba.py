@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-A minimal training script for DiT.
+A minimal training script for DiM.
 """
 import torch
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
@@ -28,7 +28,7 @@ import logging
 import os
 from accelerate import Accelerator
 
-from models import DiT_models
+from diffuseMamba import DiM_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
@@ -122,7 +122,7 @@ class CustomDataset(Dataset):
 
 def main(args):
     """
-    Trains a new DiT model.
+    Trains a new DiM model.
     """
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
 
@@ -134,7 +134,7 @@ def main(args):
     if accelerator.is_main_process:
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         experiment_index = len(glob(f"{args.results_dir}/*"))
-        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+        model_string_name = args.model.replace("/", "-")  # e.g., DiM-XL/2 --> DiM-XL-2 (for naming folders)
         experiment_dir = f"{args.results_dir}/{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
         checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -144,18 +144,18 @@ def main(args):
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
-    model = DiT_models[args.model](
+    model = DiM_models[args.model](
         input_size=latent_size,
         num_classes=args.num_classes
     )
-    # Note that parameter initialization is done within the DiT constructor
+    # Note that parameter initialization is done within the DiM constructor
     model = model.to(device)
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     if accelerator.is_main_process:
-        logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
+        logger.info(f"DiM Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
@@ -225,7 +225,7 @@ def main(args):
                 log_steps = 0
                 start_time = time()
 
-            # Save DiT checkpoint:
+            # Save DiM checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
                 if accelerator.is_main_process:
                     checkpoint = {
@@ -246,11 +246,11 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
+    # Default args here will train DiM-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
     parser.add_argument("--feature-path", type=str, default="features")
     parser.add_argument("--results-dir", type=str, default="results")
-    parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
+    parser.add_argument("--model", type=str, choices=list(DiM_models.keys()), default="DiM-XL/2")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=1400)
@@ -262,3 +262,16 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt-every", type=int, default=50_000)
     args = parser.parse_args()
     main(args)
+
+
+"""
+export HF_HOME="/cto_labs/AIDD/cache"
+accelerate launch --mixed_precision fp16 train_mamba.py --model DiM-S/2 --feature-path /cto_labs/AIDD/DATA/imagenet1k/train_vae
+
+
+export HF_HOME="/cto_labs/AIDD/cache"
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mamba.py --model DiM-S/2 --feature-path /cto_labs/AIDD/DATA/imagenet1k/train_vae
+
+export HF_HOME="/cto_labs/AIDD/cache"
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mamba.py --model DiM-B/2 --feature-path /cto_labs/AIDD/DATA/imagenet1k/train_vae
+"""
