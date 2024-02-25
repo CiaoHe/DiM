@@ -26,6 +26,7 @@ from time import time
 import argparse
 import logging
 import os
+from tqdm import tqdm
 
 from models import DiT_models
 from diffusion import create_diffusion
@@ -97,7 +98,7 @@ def main(args):
     )
     loader = DataLoader(
         dataset,
-        batch_size = 1,
+        batch_size = args.batch_size,
         shuffle=False,
         sampler=sampler,
         num_workers=args.num_workers,
@@ -105,22 +106,24 @@ def main(args):
         drop_last=True
     )
 
-    train_steps = 0
-    for x, y in loader:
+    idx = 0
+    for x, y in tqdm(loader):
+        bsz = x.size(0)
         x = x.to(device)
         y = y.to(device)
         with torch.no_grad():
             # Map input images to latent space + normalize latents:
             x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             
-        x = x.detach().cpu().numpy()    # (1, 4, 32, 32)
-        np.save(f'{args.features_path}/imagenet256_features/{train_steps}.npy', x)
-
-        y = y.detach().cpu().numpy()    # (1,)
-        np.save(f'{args.features_path}/imagenet256_labels/{train_steps}.npy', y)
+        x = x.detach().cpu().numpy()    # (B, 4, 32, 32)
+        y = y.detach().cpu().numpy()    # (B,)
+        
+        for i in range(bsz):
+            index = idx * args.batch_size + i
+            np.save(f'{args.features_path}/imagenet256_features/{index}.npy', x[i:i+1, ...])
+            np.save(f'{args.features_path}/imagenet256_labels/{index}.npy', y[i:i+1, ...])
             
-        train_steps += 1
-        print(train_steps)
+        idx += 1
 
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
@@ -138,5 +141,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
+    parser.add_argument("--batch-size", type=int, default=128)
     args = parser.parse_args()
     main(args)

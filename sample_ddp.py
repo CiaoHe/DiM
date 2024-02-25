@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Samples a large number of images from a pre-trained DiT model using DDP.
+Samples a large number of images from a pre-trained DiM model using DDP.
 Subsequently saves a .npz file that can be used to compute FID and other
 evaluation metrics via the ADM repo: https://github.com/openai/guided-diffusion/tree/main/evaluations
 
@@ -13,7 +13,7 @@ For a simple single-GPU/CPU sampling script, see sample.py.
 """
 import torch
 import torch.distributed as dist
-from models import DiT_models
+from diffuseMamba import DiM_models
 from download import find_model
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
@@ -60,18 +60,18 @@ def main(args):
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
 
     if args.ckpt is None:
-        assert args.model == "DiT-XL/2", "Only DiT-XL/2 models are available for auto-download."
+        assert args.model == "DiM-XL/2", "Only DiM-XL/2 models are available for auto-download."
         assert args.image_size in [256, 512]
         assert args.num_classes == 1000
 
     # Load model:
     latent_size = args.image_size // 8
-    model = DiT_models[args.model](
+    model = DiM_models[args.model](
         input_size=latent_size,
         num_classes=args.num_classes
     ).to(device)
-    # Auto-download a pre-trained model or load a custom DiT checkpoint from train.py:
-    ckpt_path = args.ckpt or f"DiT-XL-2-{args.image_size}x{args.image_size}.pt"
+    # Auto-download a pre-trained model or load a custom DiM checkpoint from train.py:
+    ckpt_path = args.ckpt or f"DiM-XL-2-{args.image_size}x{args.image_size}.pt"
     state_dict = find_model(ckpt_path)
     model.load_state_dict(state_dict)
     model.eval()  # important!
@@ -148,7 +148,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
+    parser.add_argument("--model", type=str, choices=list(DiM_models.keys()), default="DiM-XL/2")
     parser.add_argument("--vae",  type=str, choices=["ema", "mse"], default="ema")
     parser.add_argument("--sample-dir", type=str, default="samples")
     parser.add_argument("--per-proc-batch-size", type=int, default=32)
@@ -161,6 +161,15 @@ if __name__ == "__main__":
     parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=True,
                         help="By default, use TF32 matmuls. This massively accelerates sampling on Ampere GPUs.")
     parser.add_argument("--ckpt", type=str, default=None,
-                        help="Optional path to a DiT checkpoint (default: auto-download a pre-trained DiT-XL/2 model).")
+                        help="Optional path to a DiM checkpoint (default: auto-download a pre-trained DiM-XL/2 model).")
     args = parser.parse_args()
     main(args)
+
+
+"""
+export HF_HOME="/cto_labs/AIDD/cache"
+torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-S/2 --num-fid-samples 50000 --ckpt results/001-DiM-S-2/checkpoints/0050000.pt --sample-dir samples/DiM-S-2-ckpt-0050000 --per-proc-batch-size 64
+
+export HF_HOME="/cto_labs/AIDD/cache"
+torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-B/2 --num-fid-samples 50000 --ckpt results/000-DiM-B-2/checkpoints/0050000.pt --sample-dir samples/DiM-B-2-ckpt-0050000 --per-proc-batch-size 64
+"""
