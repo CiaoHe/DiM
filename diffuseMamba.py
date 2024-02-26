@@ -108,21 +108,23 @@ class DiMBlock(nn.Module):
     """
     A DiM block with adaptive layer norm zero (adaLN-Zero) conDiMioning.
     """
-    def __init__(self, hidden_size:int, d_conv:int, layer_idx:int, **block_kwargs):
+    def __init__(self, hidden_size:int, d_conv:int, layer_idx:int, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.mamba1 = Mamba(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx, **block_kwargs)
-        # self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        # self.mamba2 = Mamba(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx + 1, **block_kwargs)
+        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        approx_gelu = lambda: nn.GELU(approximate="tanh")
+        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, 3 * hidden_size, bias=True)
+            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
     def forward(self, x, c):
-        shift_mamba1, scale_mamba1, gate_mamba1 = self.adaLN_modulation(c).chunk(3, dim=1)
+        shift_mamba1, scale_mamba1, gate_mamba1, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_mamba1.unsqueeze(1) * self.mamba1(modulate(self.norm1(x), shift_mamba1, scale_mamba1))
-        # x = x + gate_mamba2.unsqueeze(1) * self.mamba2(modulate(self.norm2(x), shift_mamba2, scale_mamba2))
+        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
 
@@ -356,7 +358,7 @@ def DiM_B_8(**kwargs):
     return DiM(depth=12, hidden_size=768, patch_size=8, **kwargs)
 
 def DiM_S_2(**kwargs):
-    return DiM(depth=24, hidden_size=384, patch_size=2, **kwargs)
+    return DiM(depth=12, hidden_size=384, patch_size=2, **kwargs)
 
 def DiM_S_4(**kwargs):
     return DiM(depth=12, hidden_size=384, patch_size=4, **kwargs)

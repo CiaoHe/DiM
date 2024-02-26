@@ -15,7 +15,7 @@ import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 from thop import profile, clever_format
-from mamba_ssm import Mamba
+from mamba_ssm import MambaHadamard
 
 
 def modulate(x, shift, scale):
@@ -111,7 +111,7 @@ class DiMBlock(nn.Module):
     def __init__(self, hidden_size:int, d_conv:int, layer_idx:int, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.mamba1 = Mamba(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx, **block_kwargs)
+        self.mamba1 = MambaHadamard(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx, **block_kwargs)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
@@ -122,9 +122,9 @@ class DiMBlock(nn.Module):
         )
 
     def forward(self, x, c):
-        shift_mamba1, scale_mamba1, gate_mamba1, shift_mamba2, scale_mamba2, gate_mamba2 = self.adaLN_modulation(c).chunk(6, dim=1)
+        shift_mamba1, scale_mamba1, gate_mamba1, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_mamba1.unsqueeze(1) * self.mamba1(modulate(self.norm1(x), shift_mamba1, scale_mamba1))
-        x = x + gate_mamba2.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mamba2, scale_mamba2))
+        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
 

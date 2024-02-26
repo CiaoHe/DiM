@@ -3,7 +3,7 @@ import os
 import matplotlib.pyplot as plt
 
 # read txt
-def parse_log(log_path, num_processes=4, skip_first:int=10, ema=0.8):
+def parse_log(log_path, num_processes=4, skip_first:int=10, ema=0.9):
     log_name = log_path.split("/")[-2]
     with open(log_path, "r") as f:
         lines = f.readlines()
@@ -52,6 +52,6 @@ def draw_loss_curve(log_paths: list):
     
     
 if __name__ == "__main__":
-    models = ["002-DiT-S-2", "001-DiM-S-2", "003-DiM-S-2", "004-DiM-S-2"]
+    models = ["DiT-S-2", "a6000-DiM-S-2", "001-DiM-S-2", "005-DiM-S-2", "006-DiM-S-2"]
     log_paths = [f"results/{model}/log.txt" for model in models]
     draw_loss_curve(log_paths)

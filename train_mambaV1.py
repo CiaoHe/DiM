@@ -28,7 +28,7 @@ import logging
 import os
 from accelerate import Accelerator
 
-from diffuseMamba import DiM_models
+from diffuseMambaV1 import DiM_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
@@ -267,5 +267,5 @@ if __name__ == "__main__":
 
 """
 export HF_HOME="/comp_robot/rentianhe/caohe/cache"
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mamba.py --model DiM-S/2 --feature-path /shared_space/caohe/DATA/imagenet1k/train_vae
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mambaV1.py --model DiM-S/2 --feature-path /shared_space/caohe/DATA/imagenet1k/train_vae --lr 5e-4
 """

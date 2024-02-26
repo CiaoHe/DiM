@@ -158,7 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--cfg-scale",  type=float, default=1.5)
     parser.add_argument("--num-sampling-steps", type=int, default=250)
     parser.add_argument("--global-seed", type=int, default=0)
-    parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=True,
+    parser.add_argument("--tf32", action='store_true', default=True,
                         help="By default, use TF32 matmuls. This massively accelerates sampling on Ampere GPUs.")
     parser.add_argument("--ckpt", type=str, default=None,
                         help="Optional path to a DiM checkpoint (default: auto-download a pre-trained DiM-XL/2 model).")
@@ -167,9 +167,8 @@ if __name__ == "__main__":
 
 
 """
-export HF_HOME="/cto_labs/AIDD/cache"
-torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-S/2 --num-fid-samples 50000 --ckpt results/001-DiM-S-2/checkpoints/0050000.pt --sample-dir samples/DiM-S-2-ckpt-0050000 --per-proc-batch-size 64
-
-export HF_HOME="/cto_labs/AIDD/cache"
-torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-B/2 --num-fid-samples 50000 --ckpt results/000-DiM-B-2/checkpoints/0050000.pt --sample-dir samples/DiM-B-2-ckpt-0050000 --per-proc-batch-size 64
+export HF_HOME="/comp_robot/rentianhe/caohe/cache"
+MODEL_VERSION=005-DiM-S-2
+CKPT=0100000
+torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-S/2 --num-fid-samples 50000 --ckpt results/$MODEL_VERSION/checkpoints/$CKPT.pt --sample-dir samples/$MODEL_VERSION-$CKPT --per-proc-batch-size 64
 """
