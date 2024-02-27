@@ -21,7 +21,7 @@ def modulate(x, shift, scale):
 
 
 def trainable_parameters(model):
-    print(f"Trainable parameters {sum(p.numel() for p in model.parameters() if p.requires_grad)//1e6} M")
+    print(f"Trainable parameters {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6 : .2f} M")
 
 
 #################################################################################

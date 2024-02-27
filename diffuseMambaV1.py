@@ -15,7 +15,7 @@ import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 from thop import profile, clever_format
-from mamba_ssm import MambaHadamard
+from mamba_ssm import Mamba
 
 
 def modulate(x, shift, scale):
@@ -23,7 +23,7 @@ def modulate(x, shift, scale):
 
 
 def trainable_parameters(model):
-    print(f"Trainable parameters {sum(p.numel() for p in model.parameters() if p.requires_grad)//1e6} M")
+    print(f"Trainable parameters {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6 : .2f} M")
 
 
 #################################################################################
@@ -111,7 +111,7 @@ class DiMBlock(nn.Module):
     def __init__(self, hidden_size:int, d_conv:int, layer_idx:int, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.mamba1 = MambaHadamard(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx, **block_kwargs)
+        self.mamba1 = Mamba(d_model=hidden_size, d_conv=d_conv, layer_idx=2 * layer_idx, **block_kwargs)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
@@ -331,7 +331,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 #################################################################################
 
 def DiM_XL_2(**kwargs):
-    return DiM(depth=28, hidden_size=1152, patch_size=2, **kwargs)
+    return DiM(depth=25, hidden_size=1152, patch_size=2, **kwargs)
 
 def DiM_XL_4(**kwargs):
     return DiM(depth=28, hidden_size=1152, patch_size=4, **kwargs)
@@ -340,7 +340,7 @@ def DiM_XL_8(**kwargs):
     return DiM(depth=28, hidden_size=1152, patch_size=8, **kwargs)
 
 def DiM_L_2(**kwargs):
-    return DiM(depth=24, hidden_size=1024, patch_size=2, **kwargs)
+    return DiM(depth=21, hidden_size=1024, patch_size=2, **kwargs)
 
 def DiM_L_4(**kwargs):
     return DiM(depth=24, hidden_size=1024, patch_size=4, **kwargs)
@@ -349,7 +349,7 @@ def DiM_L_8(**kwargs):
     return DiM(depth=24, hidden_size=1024, patch_size=8, **kwargs)
 
 def DiM_B_2(**kwargs):
-    return DiM(depth=12, hidden_size=768, patch_size=2, **kwargs)
+    return DiM(depth=11, hidden_size=768, patch_size=2, **kwargs)
 
 def DiM_B_4(**kwargs):
     return DiM(depth=12, hidden_size=768, patch_size=4, **kwargs)
@@ -358,7 +358,7 @@ def DiM_B_8(**kwargs):
     return DiM(depth=12, hidden_size=768, patch_size=8, **kwargs)
 
 def DiM_S_2(**kwargs):
-    return DiM(depth=12, hidden_size=384, patch_size=2, **kwargs)
+    return DiM(depth=10, hidden_size=384, patch_size=2, **kwargs)
 
 def DiM_S_4(**kwargs):
     return DiM(depth=12, hidden_size=384, patch_size=4, **kwargs)
@@ -379,7 +379,7 @@ if __name__ == "__main__":
     latent_size = 32
     num_classes = 1000
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DiM_S_2(input_size=latent_size, num_classes=num_classes)
+    model = DiM_XL_2(input_size=latent_size, num_classes=num_classes)
     model = model.to(device)
     trainable_parameters(model)
     
