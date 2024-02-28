@@ -52,6 +52,6 @@ def draw_loss_curve(log_paths: list):
     
     
 if __name__ == "__main__":
-    models = ["DiT-S-2", "a6000-DiM-S-2", "001-DiM-S-2", "005-DiM-S-2", "006-DiM-S-2"]
+    models = ["DiT-S-2", "a6000-DiM-S-2", "001-DiM-S-2", "005-DiM-S-2", "007-DiM-S-2"]
     log_paths = [f"results/{model}/log.txt" for model in models]
     draw_loss_curve(log_paths)

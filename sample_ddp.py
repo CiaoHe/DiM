@@ -13,6 +13,7 @@ For a simple single-GPU/CPU sampling script, see sample.py.
 """
 import torch
 import torch.distributed as dist
+# from diffuseMambaV1 import DiM_models
 from diffuseMamba import DiM_models
 from download import find_model
 from diffusion import create_diffusion
@@ -72,7 +73,9 @@ def main(args):
     ).to(device)
     # Auto-download a pre-trained model or load a custom DiM checkpoint from train.py:
     ckpt_path = args.ckpt or f"DiM-XL-2-{args.image_size}x{args.image_size}.pt"
-    state_dict = find_model(ckpt_path)
+    checkpoint = find_model(ckpt_path)
+    if "ema" in checkpoint:  # supports checkpoints from train.py
+            state_dict = checkpoint["ema"]
     model.load_state_dict(state_dict)
     model.eval()  # important!
     diffusion = create_diffusion(str(args.num_sampling_steps))
@@ -168,7 +171,7 @@ if __name__ == "__main__":
 
 """
 export HF_HOME="/comp_robot/rentianhe/caohe/cache"
-MODEL_VERSION=005-DiM-S-2
-CKPT=0100000
-torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-S/2 --num-fid-samples 50000 --ckpt results/$MODEL_VERSION/checkpoints/$CKPT.pt --sample-dir samples/$MODEL_VERSION-$CKPT --per-proc-batch-size 64
+MODEL_VERSION=007-DiM-S-2
+CKPT=0200000
+torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-S/2 --num-fid-samples 50000 --ckpt results/$MODEL_VERSION/checkpoints/$CKPT.pt --sample-dir samples/$MODEL_VERSION-$CKPT --per-proc-batch-size 64 --cfg-scale 1.0
 """

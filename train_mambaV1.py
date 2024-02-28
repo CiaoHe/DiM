@@ -28,6 +28,7 @@ import logging
 import os
 from accelerate import Accelerator
 
+from download import find_model
 from diffuseMambaV1 import DiM_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
@@ -159,6 +160,17 @@ def main(args):
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
+    # add lr scheduler, first 20 epochs use 5*lr, then down to lr
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[20], gamma=0.2)
+    
+    # resume from checkpoint if available
+    if args.ckpt is not None:
+        ckpt_path = args.ckpt
+        state_dict = find_model(ckpt_path)
+        model.load_state_dict(state_dict["model"])
+        ema.load_state_dict(state_dict["ema"])
+        opt.load_state_dict(state_dict["opt"])
+        args = state_dict["args"]
 
     # Setup data:
     features_dir = f"{args.feature_path}/imagenet256_features"
@@ -179,7 +191,7 @@ def main(args):
     update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
-    model, opt, loader = accelerator.prepare(model, opt, loader)
+    model, opt, loader = accelerator.prepare(model, opt, loader, lr_scheduler)
 
     # Variables for monitoring/logging purposes:
     train_steps = 0
@@ -261,6 +273,7 @@ if __name__ == "__main__":
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--ckpt", type=str, default=None, help="Optional path to a custom checkpoint")
     args = parser.parse_args()
     main(args)
 
@@ -268,4 +281,12 @@ if __name__ == "__main__":
 """
 export HF_HOME="/comp_robot/rentianhe/caohe/cache"
 accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mambaV1.py --model DiM-S/2 --feature-path /shared_space/caohe/DATA/imagenet1k/train_vae --lr 5e-4
+
+# continue train
+export HF_HOME="/comp_robot/rentianhe/caohe/cache"
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mambaV1.py --model DiM-B/2 --feature-path /shared_space/caohe/DATA/imagenet1k/train_vae --lr 1e-4 --ckpt results/008-DiM-B-2/checkpoints/0300000.pt
+
+# DiM-L/2
+export HF_HOME="/comp_robot/rentianhe/caohe/cache"
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mambaV1.py --model DiM-L/2 --feature-path /shared_space/caohe/DATA/imagenet1k/train_vae --lr 5e-4
 """
