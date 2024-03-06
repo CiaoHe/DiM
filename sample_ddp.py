@@ -170,8 +170,14 @@ if __name__ == "__main__":
 
 
 """
-export HF_HOME="/comp_robot/rentianhe/caohe/cache"
-MODEL_VERSION=007-DiM-S-2
-CKPT=0200000
+export HF_HOME="/cto_labs/AIDD/cache"
+MODEL_VERSION=002-DiM-S-2
+CKPT=0100000
 torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-S/2 --num-fid-samples 50000 --ckpt results/$MODEL_VERSION/checkpoints/$CKPT.pt --sample-dir samples/$MODEL_VERSION-$CKPT --per-proc-batch-size 64 --cfg-scale 1.0
+
+
+export HF_HOME="/cto_labs/AIDD/cache"
+MODEL_VERSION=003-DiM-L-2
+CKPT=0050000
+torchrun --nnodes=1 --nproc_per_node=4 sample_ddp.py --model DiM-L/2 --num-fid-samples 50000 --ckpt results/$MODEL_VERSION/checkpoints/$CKPT.pt --sample-dir samples/$MODEL_VERSION-$CKPT --per-proc-batch-size 64 --cfg-scale 1.0
 """

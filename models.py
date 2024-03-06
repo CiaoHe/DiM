@@ -14,7 +14,6 @@ import torch.nn as nn
 import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
-from thop import profile, clever_format
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -389,8 +388,3 @@ if __name__ == "__main__":
     
     out = model(inp, t, y)
     print(out.shape)
-    
-    with torch.no_grad():
-        macs, params = profile(model, inputs=(inp, t, y))
-        macs, params = clever_format([macs, params], "%.3f")
-        print(f"MACs: {macs}")

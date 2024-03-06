@@ -11,12 +11,8 @@ import torch
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.distributed import DistributedSampler
-from torchvision.datasets import ImageFolder
-from torchvision import transforms
+from torch.optim.lr_scheduler import LambdaLR, MultiStepLR
 import numpy as np
 from collections import OrderedDict
 from PIL import Image
@@ -26,12 +22,17 @@ from time import time
 import argparse
 import logging
 import os
+import math
 from accelerate import Accelerator
+from omegaconf import OmegaConf
 
+from download import find_model
 from diffuseMamba import DiM_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
+# add tensorboard support
+from torch.utils.tensorboard import SummaryWriter
 
 #################################################################################
 #                             Training Helper Functions                         #
@@ -114,6 +115,16 @@ class CustomDataset(Dataset):
         features = np.load(os.path.join(self.features_dir, feature_file))
         labels = np.load(os.path.join(self.labels_dir, label_file))
         return torch.from_numpy(features), torch.from_numpy(labels)
+    
+
+def get_inverse_sqrt_schedule(optimizer, num_warmup_steps:int, t_ref:int):
+    # https://github.com/mmathew23/improved_edm/blob/main/train.py#L59
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1.0, num_warmup_steps))
+        return 1.0 / math.sqrt(max(1.0, (current_step - num_warmup_steps) / t_ref))
+    return LambdaLR(optimizer, lr_lambda)
+
 
 
 #################################################################################
@@ -127,7 +138,11 @@ def main(args):
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
 
     # Setup accelerator:
-    accelerator = Accelerator()
+    # ! Attention: set 'step_scheduler_with_optimizer' as False when using multiple gpus
+    # https://github.com/huggingface/accelerate/issues/2142#issuecomment-1878705812, then you can
+    # call lr_scheduler.step() after optimizer.step() in the training loop
+    # else: you need parse 'global_step' to lr_scheduler.step(global_step) in the training loop
+    accelerator = Accelerator() 
     device = accelerator.device
 
     # Setup an experiment folder:
@@ -140,6 +155,7 @@ def main(args):
         os.makedirs(checkpoint_dir, exist_ok=True)
         logger = create_logger(experiment_dir)
         logger.info(f"Experiment directory created at {experiment_dir}")
+        writer = SummaryWriter(experiment_dir)
 
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
@@ -156,9 +172,38 @@ def main(args):
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     if accelerator.is_main_process:
         logger.info(f"DiM Parameters: {sum(p.numel() for p in model.parameters()):,}")
-
+        
+    # parse optimizer config
+    assert args.optimizer_config is not None, "Please provide a yaml file for optimizer config"
+    opt_config = OmegaConf.load(args.optimizer_config)
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
+    opt = torch.optim.AdamW(
+        model.parameters(), 
+        lr=opt_config.optimizer.lr, 
+        weight_decay=opt_config.optimizer.weight_decay, 
+        betas=(opt_config.optimizer.beta1, opt_config.optimizer.beta2)
+    )        
+    # add lr scheduler, first 20 epochs use 5*lr, then down to lr
+    if opt_config.lr_scheduler.name == "multistep":
+        lr_scheduler = MultiStepLR(
+            opt, milestones=opt_config.lr_scheduler.milestones, gamma=opt_config.lr_scheduler.gamma)
+    elif opt_config.lr_scheduler.name == "inverse_sqrt":
+        lr_scheduler = get_inverse_sqrt_schedule(
+            opt, num_warmup_steps=opt_config.lr_scheduler.num_warmup_steps, t_ref=opt_config.lr_scheduler.t_ref)
+    elif opt_config.lr_scheduler.name == "cosine":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=opt_config.lr_scheduler.T_max, eta_min=opt_config.lr_scheduler.eta_min)
+    else:
+        raise ValueError(f"Unsupported lr scheduler: {opt_config.lr_scheduler.name}")    
+    
+    # resume from checkpoint if available
+    if args.ckpt is not None:
+        ckpt_path = args.ckpt
+        state_dict = find_model(ckpt_path)
+        model.load_state_dict(state_dict["model"])
+        ema.load_state_dict(state_dict["ema"])
+        opt.load_state_dict(state_dict["opt"])
+        args = state_dict["args"]
 
     # Setup data:
     features_dir = f"{args.feature_path}/imagenet256_features"
@@ -179,7 +224,7 @@ def main(args):
     update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
-    model, opt, loader = accelerator.prepare(model, opt, loader)
+    model, opt, loader, lr_scheduler = accelerator.prepare(model, opt, loader, lr_scheduler)
 
     # Variables for monitoring/logging purposes:
     train_steps = 0
@@ -203,13 +248,16 @@ def main(args):
             loss = loss_dict["loss"].mean()
             opt.zero_grad()
             accelerator.backward(loss)
+            if opt_config.optimizer.clip_grad_norm>0:
+                accelerator.clip_grad_norm_(model.parameters(), opt_config.optimizer.clip_grad_norm)
             opt.step()
+            train_steps += 1
+            lr_scheduler.step(train_steps)
             update_ema(ema, model)
 
             # Log loss values:
             running_loss += loss.item()
             log_steps += 1
-            train_steps += 1
             if train_steps % args.log_every == 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
@@ -219,7 +267,8 @@ def main(args):
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
                 avg_loss = avg_loss.item() / accelerator.num_processes
                 if accelerator.is_main_process:
-                    logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                    logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}, lr: {opt.param_groups[0]['lr']:.2e}")
+                    writer.add_scalar('Loss/train', avg_loss * accelerator.num_processes, train_steps)
                 # Reset monitoring variables:
                 running_loss = 0
                 log_steps = 0
@@ -260,12 +309,21 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    # optimizer config
+    parser.add_argument("--optimizer-config", type=str, default=None, help="Optional path to a yaml file")
+    # continue training    
+    parser.add_argument("--ckpt", type=str, default=None, help="Optional path to a custom checkpoint")
     args = parser.parse_args()
     main(args)
 
 
 """
-export HF_HOME="/comp_robot/rentianhe/caohe/cache"
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_mamba.py --model DiM-S/2 --feature-path /shared_space/caohe/DATA/imagenet1k/train_vae
+# DiM-S/2
+export HF_HOME="/cto_labs/AIDD/cache"
+accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train_mamba.py --model DiM-S/2 --feature-path /cto_labs/AIDD/DATA/imagenet1k/train_vae --optimizer-config optim_config/multistep.yaml
+
+
+# DiM-L/2
+export HF_HOME="/cto_labs/AIDD/cache"
+accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train_mambaV1.py --model DiM-L/2 --feature-path /cto_labs/AIDD/DATA/imagenet1k/train_vae --lr 4e-4
 """

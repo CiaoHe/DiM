@@ -1,0 +1,11 @@
+lr_scheduler:
+  name: 'cosine'
+  T_max: 500_000
+  eta_min: 1e-4
+
+optimizer:
+  lr: 3e-4
+  beta1: 0.9
+  beta2: 0.95
+  weight_decay: 0.0
+  clip_grad_norm: 1.0

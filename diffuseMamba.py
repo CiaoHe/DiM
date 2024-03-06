@@ -13,8 +13,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import math
+from functools import partial
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
-from thop import profile, clever_format
 from mamba_ssm import Mamba
 
 
@@ -23,7 +23,43 @@ def modulate(x, shift, scale):
 
 
 def trainable_parameters(model):
-    print(f"Trainable parameters {sum(p.numel() for p in model.parameters() if p.requires_grad)//1e6} M")
+    print(f"Trainable parameters {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6 : .2f} M")
+    
+
+#################################################################################
+#                       Mamba Layer initialization                              #
+#################################################################################
+def _init_weights(
+    module,
+    n_layer,
+    initializer_range=0.02,  # Now only used for embedding layer.
+    rescale_prenorm_residual=True,
+    n_residuals_per_layer=1,  # Change to 2 if we have MLP
+):
+    if isinstance(module, nn.Linear):
+        if module.bias is not None:
+            if not getattr(module.bias, "_no_reinit", False):
+                nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+        nn.init.normal_(module.weight, std=initializer_range)
+
+    if rescale_prenorm_residual:
+        # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
+        #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
+        #   > the weights of residual layers at initialization by a factor of 1/√N where N is the # of residual layers.
+        #   >   -- GPT-2 :: https://openai.com/blog/better-language-models/
+        #
+        # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
+        for name, p in module.named_parameters():
+            if name in ["out_proj.weight", "fc2.weight"]:
+                # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
+                # Following Pytorch init, except scale by 1/sqrt(2 * n_layer)
+                # We need to reinit p since this code could be called multiple times
+                # Having just p *= scale would repeatedly scale it down
+                nn.init.kaiming_uniform_(p, a=math.sqrt(5))
+                with torch.no_grad():
+                    p /= math.sqrt(n_residuals_per_layer * n_layer)
+
 
 
 #################################################################################
@@ -170,6 +206,7 @@ class DiM(nn.Module):
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
+        self.depth = depth
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -187,6 +224,9 @@ class DiM(nn.Module):
     def initialize_weights(self):
         # Initialize transformer layers:
         def _basic_init(module):
+            # skip mamba inner layers
+            if getattr(module, "_no_reinit", False):
+                return
             if isinstance(module, nn.Linear):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
@@ -213,6 +253,9 @@ class DiM(nn.Module):
         for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+        
+        # mamba layer initialization
+        self.apply(partial(_init_weights, n_layer=self.depth, n_residuals_per_layer=2))
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
@@ -331,7 +374,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 #################################################################################
 
 def DiM_XL_2(**kwargs):
-    return DiM(depth=28, hidden_size=1152, patch_size=2, **kwargs)
+    return DiM(depth=26, hidden_size=1152, patch_size=2, **kwargs)
 
 def DiM_XL_4(**kwargs):
     return DiM(depth=28, hidden_size=1152, patch_size=4, **kwargs)
@@ -340,7 +383,7 @@ def DiM_XL_8(**kwargs):
     return DiM(depth=28, hidden_size=1152, patch_size=8, **kwargs)
 
 def DiM_L_2(**kwargs):
-    return DiM(depth=24, hidden_size=1024, patch_size=2, **kwargs)
+    return DiM(depth=22, hidden_size=1024, patch_size=2, **kwargs)
 
 def DiM_L_4(**kwargs):
     return DiM(depth=24, hidden_size=1024, patch_size=4, **kwargs)
@@ -349,7 +392,7 @@ def DiM_L_8(**kwargs):
     return DiM(depth=24, hidden_size=1024, patch_size=8, **kwargs)
 
 def DiM_B_2(**kwargs):
-    return DiM(depth=12, hidden_size=768, patch_size=2, **kwargs)
+    return DiM(depth=11, hidden_size=768, patch_size=2, **kwargs)
 
 def DiM_B_4(**kwargs):
     return DiM(depth=12, hidden_size=768, patch_size=4, **kwargs)
@@ -358,7 +401,7 @@ def DiM_B_8(**kwargs):
     return DiM(depth=12, hidden_size=768, patch_size=8, **kwargs)
 
 def DiM_S_2(**kwargs):
-    return DiM(depth=12, hidden_size=384, patch_size=2, **kwargs)
+    return DiM(depth=10, hidden_size=384, patch_size=2, **kwargs)
 
 def DiM_S_4(**kwargs):
     return DiM(depth=12, hidden_size=384, patch_size=4, **kwargs)
@@ -379,7 +422,7 @@ if __name__ == "__main__":
     latent_size = 32
     num_classes = 1000
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DiM_S_2(input_size=latent_size, num_classes=num_classes)
+    model = DiM_XL_2(input_size=latent_size, num_classes=num_classes)
     model = model.to(device)
     trainable_parameters(model)
     
@@ -389,9 +432,4 @@ if __name__ == "__main__":
     inp, t, y = inp.to(device), t.to(device), y.to(device)
     
     out = model(inp, t, y)
-    print(out.shape)
-    
-    with torch.no_grad():
-        macs, params = profile(model, inputs=(inp, t, y))
-        macs, params = clever_format([macs, params], "%.3f")
-        print(f"MACs: {macs}")
+    print(out.shape)    

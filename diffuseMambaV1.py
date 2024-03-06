@@ -14,7 +14,6 @@ import torch.nn as nn
 import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
-from thop import profile, clever_format
 from mamba_ssm import Mamba
 
 
@@ -340,7 +339,7 @@ def DiM_XL_8(**kwargs):
     return DiM(depth=28, hidden_size=1152, patch_size=8, **kwargs)
 
 def DiM_L_2(**kwargs):
-    return DiM(depth=21, hidden_size=1024, patch_size=2, **kwargs)
+    return DiM(depth=22, hidden_size=1024, patch_size=2, **kwargs)
 
 def DiM_L_4(**kwargs):
     return DiM(depth=24, hidden_size=1024, patch_size=4, **kwargs)
@@ -390,8 +389,3 @@ if __name__ == "__main__":
     
     out = model(inp, t, y)
     print(out.shape)
-    
-    with torch.no_grad():
-        macs, params = profile(model, inputs=(inp, t, y))
-        macs, params = clever_format([macs, params], "%.3f")
-        print(f"MACs: {macs}")

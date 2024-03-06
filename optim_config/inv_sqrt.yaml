@@ -1,0 +1,11 @@
+lr_scheduler:
+  name: 'inverse_sqrt'
+  num_warmup_steps: 20_000
+  t_ref: 70_000
+
+optimizer:
+  lr: 0.001
+  beta1: 0.9
+  beta2: 0.95
+  weight_decay: 0.0
+  clip_grad_norm: 0.0
